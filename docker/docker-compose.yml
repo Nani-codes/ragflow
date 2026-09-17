@@ -100,12 +100,12 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -s -u elastic:$${ELASTIC_PASSWORD:-infini_rag_flow} http://localhost:9200 >/dev/null || exit 1",
+          "curl -s -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200 >/dev/null || exit 1",
         ]
       interval: 10s
       timeout: 10s
       retries: 60
-      start_period: 60s
+      start_period: 90s
     restart: unless-stopped
 
   mysql:
@@ -113,27 +113,25 @@ services:
     environment:
       <<: *passwords
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
+      MYSQL_DATABASE: ${MYSQL_DBNAME:-rag_flow}
     command:
       - --max_connections=1000
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --default-authentication-plugin=mysql_native_password
       - --tls_version=TLSv1.2,TLSv1.3
-      - --init-file=/data/application/init.sql
       - --binlog_expire_logs_seconds=604800
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init.sql:/data/application/init.sql:ro
+      # First-boot only (safer than --init-file on every start)
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "mysqladmin ping -uroot -p$${MYSQL_ROOT_PASSWORD} || exit 1",
-        ]
+      # Official MySQL image helper — no password interpolation issues under Coolify
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 10s
       retries: 60
-      start_period: 40s
+      start_period: 60s
     restart: unless-stopped
 
   minio:
@@ -171,11 +169,12 @@ services:
       test:
         [
           "CMD-SHELL",
-          "redis-cli -a \"$${REDIS_PASSWORD:-infini_rag_flow}\" ping | grep -q PONG",
+          "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG",
         ]
       interval: 10s
       timeout: 10s
       retries: 30
+      start_period: 20s
     restart: unless-stopped
 
 volumes:

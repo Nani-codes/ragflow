@@ -2,6 +2,7 @@
 # - No custom networks / no host port publishes
 # - No bind-mounts of repo files (Coolify turns missing ./file into a directory and breaks)
 # - MySQL entrypoint is inline to neutralize Coolify MYSQL_USER=root injection
+# - ragflow waits for deps before starting (avoids nginx-up / API-502 when ES is slow)
 #
 # Coolify UI: Domain → service "ragflow", port 80
 
@@ -13,6 +14,52 @@ services:
       - es01
       - redis
       - minio
+    # Wait for deps, then hand off to the image entrypoint.
+    # Without this, nginx comes up immediately while api/ragflow_server.py dies
+    # after ~120s waiting for Elasticsearch → persistent /api/v1 502.
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+          set -e
+          if [ "$${MYSQL_USER:-}" = "root" ]; then
+            echo "coolify-ragflow: rewriting MYSQL_USER=root -> rag_flow"
+            export MYSQL_USER=rag_flow
+          fi
+          wait_tcp() {
+            local host="$$1" port="$$2" name="$$3" tries="$${4:-90}"
+            echo "coolify-ragflow: waiting for $$name ($$host:$$port)..."
+            for i in $$(seq 1 $$tries); do
+              if (echo >/dev/tcp/$$host/$$port) >/dev/null 2>&1; then
+                echo "coolify-ragflow: $$name is reachable"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "coolify-ragflow: WARNING $$name not reachable after $$((tries*2))s; continuing"
+            return 0
+          }
+          wait_es() {
+            local tries=120
+            local auth="elastic:$${ELASTIC_PASSWORD:-infini_rag_flow}"
+            echo "coolify-ragflow: waiting for Elasticsearch health..."
+            for i in $$(seq 1 $$tries); do
+              if curl -fsS -u "$$auth" "http://es01:9200/_cluster/health?wait_for_status=yellow&timeout=1s" >/dev/null 2>&1; then
+                echo "coolify-ragflow: Elasticsearch is healthy"
+                return 0
+              fi
+              sleep 3
+            done
+            echo "coolify-ragflow: WARNING Elasticsearch not healthy after $$((tries*3))s; starting anyway"
+            return 0
+          }
+          wait_tcp mysql 3306 mysql 60
+          wait_tcp redis 6379 redis 60
+          wait_tcp minio 9000 minio 60
+          wait_tcp es01 9200 elasticsearch-tcp 90
+          wait_es
+          cd /ragflow
+          exec ./entrypoint.sh
     environment:
       DOC_ENGINE: ${DOC_ENGINE:-elasticsearch}
       DB_TYPE: ${DB_TYPE:-mysql}
@@ -72,15 +119,27 @@ services:
       cluster.routing.allocation.disk.watermark.low: 5gb
       cluster.routing.allocation.disk.watermark.high: 3gb
       cluster.routing.allocation.disk.watermark.flood_stage: 2gb
+      # Keep heap modest so ES can boot on a shared Coolify host
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
     volumes:
       - esdata01:/usr/share/elasticsearch/data
     tmpfs:
       - /tmp:mode=1777,size=512m
-    mem_limit: ${MEM_LIMIT:-8073741824}
+    mem_limit: ${MEM_LIMIT:-2147483648}
     ulimits:
       memlock:
         soft: -1
         hard: -1
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
     restart: unless-stopped
 
   mysql:
@@ -112,6 +171,16 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
     restart: unless-stopped
 
   minio:
@@ -122,6 +191,12 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-infini_rag_flow}
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
     restart: unless-stopped
 
   redis:
@@ -138,6 +213,16 @@ services:
       - volatile-lru
     volumes:
       - redis_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

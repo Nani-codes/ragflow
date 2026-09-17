@@ -19,11 +19,9 @@ services:
     # after ~120s waiting for Elasticsearch → persistent /api/v1 502.
     entrypoint:
       - /bin/bash
-      - -ec
+      - -c
       - |
-          set -e
-          # Coolify injects shared env into every container and can blank/override
-          # service hostnames. Force in-compose DNS names after env injection.
+          # Force in-network DNS names after Coolify env injection.
           export MYSQL_HOST=mysql
           export MYSQL_PORT=3306
           export REDIS_HOST=redis
@@ -34,44 +32,17 @@ services:
           export ES_PORT=9200
           export DOC_ENGINE=elasticsearch
           export DB_TYPE=mysql
-          if [ "$${MYSQL_USER:-}" = "root" ] || [ -z "$${MYSQL_USER:-}" ]; then
-            echo "coolify-ragflow: rewriting MYSQL_USER -> rag_flow"
-            export MYSQL_USER=rag_flow
-          fi
-          if [ -z "$${MYSQL_DBNAME:-}" ]; then
-            export MYSQL_DBNAME=rag_flow
-          fi
-          wait_tcp() {
-            local host="$$1" port="$$2" name="$$3"
-            echo "coolify-ragflow: waiting for $$name ($$host:$$port)..."
-            while true; do
-              if (echo >/dev/tcp/$$host/$$port) >/dev/null 2>&1; then
-                echo "coolify-ragflow: $$name is reachable"
-                return 0
-              fi
-              sleep 2
-            done
-          }
-          wait_es() {
-            local auth="elastic:$${ELASTIC_PASSWORD:-infini_rag_flow}"
-            echo "coolify-ragflow: waiting for Elasticsearch health (will not start API until ready)..."
-            while true; do
-              # Prefer authenticated health; fall back to unauthenticated (security disabled).
-              if curl -fsS -u "$$auth" "http://es01:9200/_cluster/health" >/dev/null 2>&1 \
-                || curl -fsS "http://es01:9200/_cluster/health" >/dev/null 2>&1; then
-                echo "coolify-ragflow: Elasticsearch is healthy"
-                return 0
-              fi
-              sleep 5
-            done
-          }
-          wait_tcp mysql 3306 mysql
-          wait_tcp redis 6379 redis
-          wait_tcp minio 9000 minio
-          wait_tcp es01 9200 elasticsearch-tcp
-          wait_es
+          export MYSQL_USER=root
+          echo "coolify-ragflow: waiting for mysql"
+          until (echo >/dev/tcp/mysql/3306) >/dev/null 2>&1; do sleep 2; done
+          echo "coolify-ragflow: waiting for redis"
+          until (echo >/dev/tcp/redis/6379) >/dev/null 2>&1; do sleep 2; done
+          echo "coolify-ragflow: waiting for minio"
+          until (echo >/dev/tcp/minio/9000) >/dev/null 2>&1; do sleep 2; done
+          echo "coolify-ragflow: waiting for elasticsearch"
+          until curl -fsS http://es01:9200/_cluster/health >/dev/null 2>&1; do sleep 5; done
+          echo "coolify-ragflow: deps ready, starting RAGFlow"
           cd /ragflow
-          # Defer heavy workers until the API is proven healthy on Coolify
           exec ./entrypoint.sh --disable-taskexecutor --disable-datasync
     environment:
       DOC_ENGINE: ${DOC_ENGINE:-elasticsearch}

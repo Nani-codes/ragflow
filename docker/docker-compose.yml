@@ -4,12 +4,10 @@
 # - Flat services (no compose profiles / include)
 # - Defaults match upstream docker/.env (change secrets in Coolify for production)
 # Upstream original saved as docker-compose.upstream.yml
-
-x-passwords: &passwords
-  MYSQL_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-infini_rag_flow}
-  MINIO_PASSWORD: ${MINIO_PASSWORD:-infini_rag_flow}
-  ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-infini_rag_flow}
+#
+# IMPORTANT: Do NOT put MYSQL_PASSWORD into the mysql service env unless
+# MYSQL_USER is also set — the official MySQL image exits if MYSQL_PASSWORD
+# is set alone.
 
 services:
   ragflow:
@@ -24,7 +22,6 @@ services:
       minio:
         condition: service_healthy
     environment:
-      <<: *passwords
       DOC_ENGINE: ${DOC_ENGINE:-elasticsearch}
       DB_TYPE: ${DB_TYPE:-mysql}
       DEVICE: ${DEVICE:-cpu}
@@ -33,19 +30,23 @@ services:
       MYSQL_HOST: ${MYSQL_HOST:-mysql}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
       MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
       MYSQL_DBNAME: ${MYSQL_DBNAME:-rag_flow}
       MYSQL_MAX_PACKET: ${MYSQL_MAX_PACKET:-1073741824}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-infini_rag_flow}
       REDIS_USERNAME: ${REDIS_USERNAME:-}
       MINIO_HOST: ${MINIO_HOST:-minio}
       MINIO_PORT: ${MINIO_PORT:-9000}
       MINIO_USER: ${MINIO_USER:-rag_flow}
+      MINIO_PASSWORD: ${MINIO_PASSWORD:-infini_rag_flow}
       MINIO_BUCKET: ${MINIO_BUCKET:-}
       MINIO_PREFIX_PATH: ${MINIO_PREFIX_PATH:-}
       ES_HOST: ${ES_HOST:-es01}
       ES_PORT: ${ES_PORT:-9200}
       ES_USER: ${ES_USER:-elastic}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-infini_rag_flow}
       REGISTER_ENABLED: ${REGISTER_ENABLED:-0}
       ENABLE_REGISTER: ${ENABLE_REGISTER:-false}
       DISABLE_PASSWORD_LOGIN: ${DISABLE_PASSWORD_LOGIN:-false}
@@ -77,8 +78,8 @@ services:
   es01:
     image: elasticsearch:${STACK_VERSION:-8.11.3}
     environment:
-      <<: *passwords
       node.name: es01
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-infini_rag_flow}
       bootstrap.memory_lock: "false"
       discovery.type: single-node
       xpack.security.enabled: "true"
@@ -111,7 +112,7 @@ services:
   mysql:
     image: mysql:8.0.40
     environment:
-      <<: *passwords
+      # Only official MySQL vars — never set MYSQL_PASSWORD without MYSQL_USER
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
       MYSQL_DATABASE: ${MYSQL_DBNAME:-rag_flow}
     command:
@@ -123,11 +124,18 @@ services:
       - --binlog_expire_logs_seconds=604800
     volumes:
       - mysql_data:/var/lib/mysql
-      # First-boot only (safer than --init-file on every start)
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      # Official MySQL image helper — no password interpolation issues under Coolify
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-uroot",
+          "-p${MYSQL_PASSWORD:-infini_rag_flow}",
+        ]
       interval: 10s
       timeout: 10s
       retries: 60
@@ -138,7 +146,6 @@ services:
     image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: ["server", "--console-address", ":9001", "/data"]
     environment:
-      <<: *passwords
       MINIO_ROOT_USER: ${MINIO_USER:-rag_flow}
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-infini_rag_flow}
     volumes:
@@ -148,12 +155,12 @@ services:
       interval: 10s
       timeout: 10s
       retries: 30
+      start_period: 20s
     restart: unless-stopped
 
   redis:
     image: valkey/valkey:8
     environment:
-      <<: *passwords
       REDIS_PASSWORD: ${REDIS_PASSWORD:-infini_rag_flow}
     command:
       - redis-server

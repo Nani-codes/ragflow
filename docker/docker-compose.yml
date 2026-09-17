@@ -2,12 +2,11 @@
 # - No custom networks (Coolify provides one)
 # - No host port publishes (use Coolify domain → port 80)
 # - Flat services (no compose profiles / include)
-# - Defaults match upstream docker/.env (change secrets in Coolify for production)
-# Upstream original saved as docker-compose.upstream.yml
 #
-# IMPORTANT: Do NOT put MYSQL_PASSWORD into the mysql service env unless
-# MYSQL_USER is also set — the official MySQL image exits if MYSQL_PASSWORD
-# is set alone.
+# COOLIFY WARNING:
+# Coolify injects shared Environment Variables into ALL services.
+# Never set MYSQL_USER=root in Coolify — the official MySQL image will exit.
+# Use MYSQL_USER=rag_flow (non-root) and the same MYSQL_PASSWORD for root+app.
 
 services:
   ragflow:
@@ -29,7 +28,8 @@ services:
       RAGFLOW_HOST: ${RAGFLOW_HOST:-0.0.0.0}
       MYSQL_HOST: ${MYSQL_HOST:-mysql}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-root}
+      # Must be a non-root user (Coolify injects this into mysql too)
+      MYSQL_USER: ${MYSQL_USER:-rag_flow}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
       MYSQL_DBNAME: ${MYSQL_DBNAME:-rag_flow}
       MYSQL_MAX_PACKET: ${MYSQL_MAX_PACKET:-1073741824}
@@ -112,19 +112,14 @@ services:
   mysql:
     image: mysql:8.0.40
     environment:
-      # Only official MySQL vars — never set MYSQL_PASSWORD without MYSQL_USER
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
       MYSQL_DATABASE: ${MYSQL_DBNAME:-rag_flow}
-    command:
-      - --max_connections=1000
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --default-authentication-plugin=mysql_native_password
-      - --tls_version=TLSv1.2,TLSv1.3
-      - --binlog_expire_logs_seconds=604800
+      # Required because Coolify may inject MYSQL_PASSWORD into this container.
+      # MYSQL_USER must NOT be "root" or the image exits immediately.
+      MYSQL_USER: ${MYSQL_USER:-rag_flow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test:
         [
@@ -136,10 +131,10 @@ services:
           "-uroot",
           "-p${MYSQL_PASSWORD:-infini_rag_flow}",
         ]
-      interval: 10s
-      timeout: 10s
+      interval: 5s
+      timeout: 5s
       retries: 60
-      start_period: 60s
+      start_period: 45s
     restart: unless-stopped
 
   minio:

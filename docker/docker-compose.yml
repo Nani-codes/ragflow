@@ -22,9 +22,24 @@ services:
       - -ec
       - |
           set -e
-          if [ "$${MYSQL_USER:-}" = "root" ]; then
-            echo "coolify-ragflow: rewriting MYSQL_USER=root -> rag_flow"
+          # Coolify injects shared env into every container and can blank/override
+          # service hostnames. Force in-compose DNS names after env injection.
+          export MYSQL_HOST=mysql
+          export MYSQL_PORT=3306
+          export REDIS_HOST=redis
+          export REDIS_PORT=6379
+          export MINIO_HOST=minio
+          export MINIO_PORT=9000
+          export ES_HOST=es01
+          export ES_PORT=9200
+          export DOC_ENGINE=elasticsearch
+          export DB_TYPE=mysql
+          if [ "$${MYSQL_USER:-}" = "root" ] || [ -z "$${MYSQL_USER:-}" ]; then
+            echo "coolify-ragflow: rewriting MYSQL_USER -> rag_flow"
             export MYSQL_USER=rag_flow
+          fi
+          if [ -z "$${MYSQL_DBNAME:-}" ]; then
+            export MYSQL_DBNAME=rag_flow
           fi
           wait_tcp() {
             local host="$$1" port="$$2" name="$$3"
@@ -56,7 +71,8 @@ services:
           wait_tcp es01 9200 elasticsearch-tcp
           wait_es
           cd /ragflow
-          exec ./entrypoint.sh
+          # Defer heavy workers until the API is proven healthy on Coolify
+          exec ./entrypoint.sh --disable-taskexecutor --disable-datasync
     environment:
       DOC_ENGINE: ${DOC_ENGINE:-elasticsearch}
       DB_TYPE: ${DB_TYPE:-mysql}

@@ -27,36 +27,33 @@ services:
             export MYSQL_USER=rag_flow
           fi
           wait_tcp() {
-            local host="$$1" port="$$2" name="$$3" tries="$${4:-90}"
+            local host="$$1" port="$$2" name="$$3"
             echo "coolify-ragflow: waiting for $$name ($$host:$$port)..."
-            for i in $$(seq 1 $$tries); do
+            while true; do
               if (echo >/dev/tcp/$$host/$$port) >/dev/null 2>&1; then
                 echo "coolify-ragflow: $$name is reachable"
                 return 0
               fi
               sleep 2
             done
-            echo "coolify-ragflow: WARNING $$name not reachable after $$((tries*2))s; continuing"
-            return 0
           }
           wait_es() {
-            local tries=120
             local auth="elastic:$${ELASTIC_PASSWORD:-infini_rag_flow}"
-            echo "coolify-ragflow: waiting for Elasticsearch health..."
-            for i in $$(seq 1 $$tries); do
-              if curl -fsS -u "$$auth" "http://es01:9200/_cluster/health?wait_for_status=yellow&timeout=1s" >/dev/null 2>&1; then
+            echo "coolify-ragflow: waiting for Elasticsearch health (will not start API until ready)..."
+            while true; do
+              # Prefer authenticated health; fall back to unauthenticated (security disabled).
+              if curl -fsS -u "$$auth" "http://es01:9200/_cluster/health" >/dev/null 2>&1 \
+                || curl -fsS "http://es01:9200/_cluster/health" >/dev/null 2>&1; then
                 echo "coolify-ragflow: Elasticsearch is healthy"
                 return 0
               fi
-              sleep 3
+              sleep 5
             done
-            echo "coolify-ragflow: WARNING Elasticsearch not healthy after $$((tries*3))s; starting anyway"
-            return 0
           }
-          wait_tcp mysql 3306 mysql 60
-          wait_tcp redis 6379 redis 60
-          wait_tcp minio 9000 minio 60
-          wait_tcp es01 9200 elasticsearch-tcp 90
+          wait_tcp mysql 3306 mysql
+          wait_tcp redis 6379 redis
+          wait_tcp minio 9000 minio
+          wait_tcp es01 9200 elasticsearch-tcp
           wait_es
           cd /ragflow
           exec ./entrypoint.sh
@@ -113,16 +110,20 @@ services:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-infini_rag_flow}
       bootstrap.memory_lock: "false"
       discovery.type: single-node
-      xpack.security.enabled: "true"
+      # Security off avoids Coolify password/volume mismatch 401s that leave the API dead
+      xpack.security.enabled: "false"
       xpack.security.http.ssl.enabled: "false"
       xpack.security.transport.ssl.enabled: "false"
+      # Avoid host vm.max_map_count failures common on shared Coolify VMs
+      node.store.allow_mmap: "false"
       cluster.routing.allocation.disk.watermark.low: 5gb
       cluster.routing.allocation.disk.watermark.high: 3gb
       cluster.routing.allocation.disk.watermark.flood_stage: 2gb
       # Keep heap modest so ES can boot on a shared Coolify host
       ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
     volumes:
-      - esdata01:/usr/share/elasticsearch/data
+      # New volume name forces a clean ES bootstrap (old esdata01 may have a different elastic password)
+      - esdata02:/usr/share/elasticsearch/data
     tmpfs:
       - /tmp:mode=1777,size=512m
     mem_limit: ${MEM_LIMIT:-2147483648}
@@ -131,15 +132,11 @@ services:
         soft: -1
         hard: -1
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl -fsS -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health >/dev/null || exit 1",
-        ]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 10s
-      retries: 30
-      start_period: 120s
+      retries: 60
+      start_period: 90s
     restart: unless-stopped
 
   mysql:
@@ -227,7 +224,7 @@ services:
 
 volumes:
   ragflow_logs:
-  esdata01:
+  esdata02:
   mysql_data:
   minio_data:
   redis_data:

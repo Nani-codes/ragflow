@@ -1,12 +1,9 @@
 # Coolify-ready RAGFlow (CPU + Elasticsearch)
 # - No custom networks / no host port publishes
-# - depends_on does NOT wait on healthchecks (Coolify often fails those in seconds)
-# - mysql uses mysql-coolify-entrypoint.sh to neutralize Coolify env injection
+# - No bind-mounts of repo files (Coolify turns missing ./file into a directory and breaks)
+# - MySQL entrypoint is inline to neutralize Coolify MYSQL_USER=root injection
 #
-# Coolify UI:
-# - Domain → service "ragflow", port 80
-# - Set MYSQL_USER=rag_flow (never root) OR leave unset (entrypoint fixes it)
-# - Exclude mysql/es01/redis/minio from Coolify healthchecks if the UI offers that
+# Coolify UI: Domain → service "ragflow", port 80
 
 services:
   ragflow:
@@ -51,8 +48,6 @@ services:
       USE_DOCLING: ${USE_DOCLING:-false}
     volumes:
       - ragflow_logs:/ragflow/logs
-      - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template:ro
-      - ./entrypoint.sh:/ragflow/entrypoint.sh:ro
     expose:
       - "80"
       - "9380"
@@ -90,7 +85,26 @@ services:
 
   mysql:
     image: mysql:8.0.40
-    entrypoint: ["/bin/bash", "/mysql-coolify-entrypoint.sh"]
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+          ROOT_PW="$${MYSQL_ROOT_PASSWORD:-$${MYSQL_PASSWORD:-infini_rag_flow}}"
+          DB_NAME="$${MYSQL_DATABASE:-rag_flow}"
+          if [ "$${MYSQL_USER:-}" = "root" ]; then
+            echo "coolify-entrypoint: ignoring MYSQL_USER=root"
+            APP_USER="rag_flow"
+            APP_PW="$$ROOT_PW"
+          else
+            APP_USER="$${MYSQL_USER:-rag_flow}"
+            APP_PW="$${MYSQL_PASSWORD:-$$ROOT_PW}"
+          fi
+          export MYSQL_ROOT_PASSWORD="$$ROOT_PW"
+          export MYSQL_DATABASE="$$DB_NAME"
+          export MYSQL_USER="$$APP_USER"
+          export MYSQL_PASSWORD="$$APP_PW"
+          echo "coolify-entrypoint: mysqld db=$$MYSQL_DATABASE user=$$MYSQL_USER"
+          exec docker-entrypoint.sh mysqld
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
       MYSQL_DATABASE: ${MYSQL_DBNAME:-rag_flow}
@@ -98,7 +112,6 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-infini_rag_flow}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./mysql-coolify-entrypoint.sh:/mysql-coolify-entrypoint.sh:ro
     restart: unless-stopped
 
   minio:

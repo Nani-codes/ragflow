@@ -33,6 +33,9 @@ services:
           export DOC_ENGINE=elasticsearch
           export DB_TYPE=mysql
           export MYSQL_USER=root
+          # v0.27 only starts the Python API when this is exactly "python" or "hybrid".
+          # Unset => nginx up, no process on :9380, container exits after `wait`.
+          export API_PROXY_SCHEME=python
           echo "coolify-ragflow: waiting for mysql"
           until (echo >/dev/tcp/mysql/3306) >/dev/null 2>&1; do sleep 2; done
           echo "coolify-ragflow: waiting for redis"
@@ -43,8 +46,9 @@ services:
           until curl -fsS http://es01:9200/_cluster/health >/dev/null 2>&1; do sleep 5; done
           echo "coolify-ragflow: deps ready, starting RAGFlow"
           cd /ragflow
-          exec ./entrypoint.sh --disable-taskexecutor --disable-datasync
+          exec ./entrypoint.sh
     environment:
+      API_PROXY_SCHEME: python
       DOC_ENGINE: ${DOC_ENGINE:-elasticsearch}
       DB_TYPE: ${DB_TYPE:-mysql}
       DEVICE: ${DEVICE:-cpu}
